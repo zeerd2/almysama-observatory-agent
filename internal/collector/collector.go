@@ -232,6 +232,7 @@ func runText(timeout time.Duration, name string, args ...string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), "HOME=/root", "XDG_CONFIG_HOME=/tmp")
 	out, err := cmd.CombinedOutput()
 	if err != nil && len(out) == 0 {
 		return ""

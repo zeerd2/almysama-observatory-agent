@@ -13,6 +13,27 @@ CONFIG_DIR="/etc/almysama-agent"
 CONFIG_FILE="${CONFIG_DIR}/config.json"
 SERVICE_FILE="/etc/systemd/system/almysama-agent.service"
 
+say() {
+  printf '%s\n' "$*"
+}
+
+step() {
+  printf '==> %s\n' "$*"
+}
+
+ok() {
+  printf 'OK  %s\n' "$*"
+}
+
+warn() {
+  printf 'WARN %s\n' "$*" >&2
+}
+
+die() {
+  printf 'ERR %s\n' "$*" >&2
+  exit 1
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -44,8 +65,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Please run as root or through sudo." >&2
-  exit 1
+  die "Please run as root or through sudo."
 fi
 
 if [ -z "$SERVER" ] || [ -z "$TOKEN" ]; then
@@ -59,12 +79,11 @@ case "$ARCH_RAW" in
   x86_64|amd64) ARCH="amd64" ;;
   aarch64|arm64) ARCH="arm64" ;;
   armv7l|armv7*) ARCH="armv7" ;;
-  *) echo "Unsupported architecture: $ARCH_RAW" >&2; exit 1 ;;
+  *) die "Unsupported architecture: $ARCH_RAW" ;;
 esac
 
 if [ "$OS" != "linux" ]; then
-  echo "Unsupported OS: $OS" >&2
-  exit 1
+  die "Unsupported OS: $OS"
 fi
 
 TMP_DIR="$(mktemp -d)"
@@ -80,22 +99,35 @@ else
   URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${ASSET}"
 fi
 
-echo "Downloading ${URL}"
+say "Almysama Observatory Agent installer"
+say
+step "Checking host"
+ok "OS ${OS}, arch ${ARCH}"
+ok "Server ${SERVER}"
+[ -n "$NAME" ] && ok "Node name ${NAME}"
+
+step "Downloading agent (${VERSION}, ${OS}/${ARCH})"
 if command -v curl >/dev/null 2>&1; then
   CURL_TLS=""
   [ "$INSECURE" = "true" ] && CURL_TLS="-k"
-  curl -fsSL $CURL_TLS "$URL" -o "$TMP_DIR/agent.tar.gz"
+  if ! curl -fsSL $CURL_TLS "$URL" -o "$TMP_DIR/agent.tar.gz"; then
+    die "Download failed: ${URL}"
+  fi
 elif command -v wget >/dev/null 2>&1; then
   WGET_TLS=""
   [ "$INSECURE" = "true" ] && WGET_TLS="--no-check-certificate"
-  wget -q $WGET_TLS "$URL" -O "$TMP_DIR/agent.tar.gz"
+  if ! wget -q $WGET_TLS "$URL" -O "$TMP_DIR/agent.tar.gz"; then
+    die "Download failed: ${URL}"
+  fi
 else
-  echo "curl or wget is required." >&2
-  exit 1
+  die "curl or wget is required."
 fi
+ok "Release asset downloaded"
 
+step "Installing files"
 tar -xzf "$TMP_DIR/agent.tar.gz" -C "$TMP_DIR"
 install -m 0755 "$TMP_DIR/almysama-agent" "${INSTALL_DIR}/almysama-agent"
+ok "Binary installed to ${INSTALL_DIR}/almysama-agent"
 
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
@@ -110,8 +142,10 @@ cat > "$CONFIG_FILE" <<EOF
 }
 EOF
 chmod 600 "$CONFIG_FILE"
+ok "Config written to ${CONFIG_FILE}"
 
 if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+  step "Starting systemd service"
   cat > "$SERVICE_FILE" <<'EOF'
 [Unit]
 Description=Almysama Observatory Agent
@@ -133,10 +167,29 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now almysama-agent
+  systemctl enable almysama-agent >/dev/null
   systemctl restart almysama-agent
-  systemctl --no-pager --full status almysama-agent | sed -n '1,12p' || true
+
+  i=0
+  AGENT_ID=""
+  SERVICE_STATE="unknown"
+  while [ "$i" -lt 12 ]; do
+    SERVICE_STATE="$(systemctl is-active almysama-agent 2>/dev/null || true)"
+    AGENT_ID="$(sed -n 's/.*"agent_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG_FILE" 2>/dev/null | head -n 1)"
+    if [ "$SERVICE_STATE" = "active" ] && [ -n "$AGENT_ID" ]; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 1
+  done
+
+  if [ "$SERVICE_STATE" = "active" ]; then
+    ok "Service is active"
+  else
+    warn "Service state is ${SERVICE_STATE}; check logs with: journalctl -u almysama-agent -n 80 --no-pager"
+  fi
 elif command -v rc-update >/dev/null 2>&1; then
+  step "Starting OpenRC service"
   cat > /etc/init.d/almysama-agent <<'EOF'
 #!/sbin/openrc-run
 name="Almysama Observatory Agent"
@@ -151,12 +204,23 @@ depend() {
 }
 EOF
   chmod +x /etc/init.d/almysama-agent
-  rc-update add almysama-agent default
+  rc-update add almysama-agent default >/dev/null
   rc-service almysama-agent restart
+  AGENT_ID="$(sed -n 's/.*"agent_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG_FILE" 2>/dev/null | head -n 1)"
+  SERVICE_STATE="started"
+  ok "OpenRC service started"
 else
-  echo "No supported service manager found. Binary installed at ${INSTALL_DIR}/almysama-agent" >&2
-  echo "Run manually: ${INSTALL_DIR}/almysama-agent -config ${CONFIG_FILE}" >&2
+  warn "No supported service manager found."
+  say "Binary installed at ${INSTALL_DIR}/almysama-agent"
+  say "Run manually: ${INSTALL_DIR}/almysama-agent -config ${CONFIG_FILE}"
   exit 1
 fi
 
-echo "Almysama Agent installed."
+say
+say "Almysama Agent installed"
+say "  Service : almysama-agent (${SERVICE_STATE:-unknown})"
+[ -n "${AGENT_ID:-}" ] && say "  Agent ID: ${AGENT_ID}"
+say "  Server  : ${SERVER}"
+say "  Config  : ${CONFIG_FILE}"
+say "  Logs    : journalctl -u almysama-agent -f"
+say "  Remove  : wget -qO- https://raw.githubusercontent.com/${OWNER}/${REPO}/main/uninstall.sh | sudo sh"

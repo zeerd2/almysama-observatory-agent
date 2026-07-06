@@ -10,6 +10,31 @@ bash -c 'set -o pipefail; wget -qO- https://raw.githubusercontent.com/zeerd2/alm
 
 The installer detects Linux architecture, downloads the matching GitHub release asset, writes `/etc/almysama-agent/config.json`, registers a systemd or OpenRC service, and starts the agent.
 
+Successful installs print a compact summary instead of a full `systemctl status` dump:
+
+```text
+Almysama Observatory Agent installer
+
+==> Checking host
+OK  OS linux, arch amd64
+OK  Server https://agent.almysama.tech
+OK  Node name Tokyo-01
+==> Downloading agent (latest, linux/amd64)
+OK  Release asset downloaded
+==> Installing files
+OK  Binary installed to /usr/local/bin/almysama-agent
+OK  Config written to /etc/almysama-agent/config.json
+==> Starting systemd service
+OK  Service is active
+
+Almysama Agent installed
+  Service : almysama-agent (active)
+  Agent ID: agt_xxxxxxxxxxxxxxxxxxxx
+  Server  : https://agent.almysama.tech
+  Config  : /etc/almysama-agent/config.json
+  Logs    : journalctl -u almysama-agent -f
+```
+
 Collected data:
 
 - system uptime, load, memory, and root disk usage

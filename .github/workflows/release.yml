@@ -1,0 +1,63 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            goarm: ""
+          - goos: linux
+            goarch: arm64
+            goarm: ""
+          - goos: linux
+            goarch: arm
+            goarm: "7"
+            asset_arch: armv7
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          mkdir -p dist
+          go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o dist/almysama-agent ./cmd/agent
+          chmod +x dist/almysama-agent
+          ASSET_ARCH="${{ matrix.asset_arch }}"
+          if [ -z "$ASSET_ARCH" ]; then ASSET_ARCH="${{ matrix.goarch }}"; fi
+          ASSET="almysama-agent_${{ matrix.goos }}_${ASSET_ARCH}.tar.gz"
+          tar -C dist -czf "dist/${ASSET}" almysama-agent
+          sha256sum "dist/${ASSET}" > "dist/${ASSET}.sha256"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
